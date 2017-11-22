@@ -1,0 +1,184 @@
+---
+title: "Prediction Assignment"
+author: "Kees Eveleens Maarse"
+date: "11/19/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Introduction
+
+This assignment aims to demonstrate the capability to predict a number of outcomes using a trained model. The case concerns the following: when doing physical exercises, one thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+### The Data
+
+Two sets of data are supplied for this assignment:
+- a training set, containing close to 20.000 records, each having 160 variables. One of the variables is an indicator called 'classe', that indicates the level of 'correctness' the physical activity is carried out (i.e. classe = 'A' means correct, classe = 'B' to 'E' mean various ways of incorrectness.) 
+- a testing set, containing 20 records of again 160 variables, but  the classe variable is missing; this is the variable that should be predicted in this assignment. An numbered variable is included i.s.o. the classe variable.
+```{r}
+library(RCurl)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(randomForest)
+```
+In the following R code, the data is loaded into the R-session.
+```{r}
+myfile <- getURL('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv', ssl.verifyhost=FALSE, ssl.verifypeer=FALSE)
+training <- read.csv(textConnection(myfile), header=T)
+myfile <- getURL('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv', ssl.verifyhost=FALSE, ssl.verifypeer=FALSE)
+testing <- read.csv(textConnection(myfile), header=T)
+```
+
+### Selecting the columns
+
+Eyeballing the training set, it was easy recognisable that quite some columns where consistently empty, throughout the set. Just a minority of records are present, where nearly all columns are filled. I decided to focus on those columns that are completely filled, throughout the set. So, in the following R-code I select the columns that are filled consistently, and put them into a data frame 'trainingCol'. I als decided to leave out all timestamp related fields, and the new_window and num_window fields. I couldn't see any value of those fields in predicting the outcome. I decided to keep the user_name: maybe one of the persons involved is consistently doing very well, or very poor! 
+
+Still, some 56 columns, which is quite a lot. I did my first attempts in traning a model, but found results disappointing.
+
+So I decided to look for columns that have a high degree of correlation; I suspected quite some columns could have a high degree of correlation. By finding out, I expect to kick out some more columns because they sort of contain the same sort of information.
+
+In order to calculate a correlation matrix, we need to make sure that all columns are numeric. So, just for finding the correlation I created a checkCor data frame where I left out the columns containing the classe variable and the one containing the user_name.
+
+Then, I calculated the correlation matrix, set the values of all elements on the diagonal to 0 (because they are 1), and produced a table containing all correlated pairs that have a higher value than .8.
+
+```{r}
+trainingCol <- select(training, 2, 8:11, 37:49, 60:68, 84:86, 102, 113:124, 140, 151:160)
+checkCor <- trainingCol[,-54]
+checkCor <- checkCor[,-1]
+M <- abs(cor(checkCor))
+diag(M) <- 0
+which(M > .8,arr.ind = T)
+```
+
+### Some plots 
+
+After studying the results, I found some pairs of variables that showed high degrees of correlation. 
+
+In the following plots, some examples are given of pairs of variables that have a high degree of correlation.
+
+I also inluded a plot that shows some of the more un-correlated variables, and coloured the points according to the classe variable (so I used the training data frame, because I need the classe here). This plot is promising, in terms of showing at least a beginning of distinction between various areas where classe 'A' is located, classe ' D', etc. But clearly it is not enough.
+```{r}
+plot(checkCor$total_accel_belt,checkCor$roll_belt)
+plot(checkCor$yaw_belt,checkCor$roll_belt)
+plot(checkCor$accel_belt_z,checkCor$roll_belt)
+qplot(data=training, x=total_accel_belt,y=magnet_arm_y,col=classe)
+```
+
+Based upon the results I decided to leave out some more columns, because the the contents are correlated to some extend. The columns I left out are:
+- yaw_belt
+- total_accell_belt
+- accel_belt_y
+- accel_belt_z
+- accel_arm_y
+- accel_belt_x
+- magnet_belt_x
+- roll_belt
+
+So the number of columns to be included in the training of the model is less, and the columns that remain should have a lower degree of correlation.
+
+
+### Training the model (1)
+
+For training the model, I decided to try use a tree based mmodel. And to make sure the model is trained correct, I used k-folds cross validation, setting k to 10. 
+
+```{r}
+train_control<- trainControl(method="cv", number=10)
+model<- train(classe~., data=trainingCol, trControl=train_control, method="rpart")
+model
+```
+
+My first attempts proved (again) disappointing. Accuracy was somewhere in the area of .5. I did various expiriments with various column selections, but I wasn't able to improve the accuray to an acceptable level. So, at this moment I was pretty desparate!
+
+I decided to give the random forest method a try. So, I tried the following command:
+
+```{r eval=FALSE}
+model <- train(classe~.,data=trainingCol,method="rf",prox=TRUE)
+```
+
+This proved to be a bit heavy for my MacBook-Pro: after about 2.5 hours it didn't give any results, so I broke it off. Thee only result was that my Mac sort of turned into a heater.
+
+
+### New Approach
+
+At this point in time, I decided to take another direction. I needed to find out which columns are really required to predict the value of classe. So I wanted to find out whether there exists some higher degree of correlation between some of the columns of the training data set and the classe variable. The problem is that the classe variable is a factor, having a character type. Then I rememberd the class where a factor varable is turned into a set of columns, each containing an numerical indicator variable. So, in this case I would need a column containing 1 when classe is 'A', and 0 where classe has another values than 'A'. And same for 'B', 'C', and so on.
+
+I checked the dummyVars function, but found it difficult to understand what it exactly does, so I created the indicator columns manually. The I removed the classe variable and the user_name variable, so I had just numerical vairables in my data frame. 
+
+So, then I could calculate a correlation matrix, and checked tha correlation of the other columns against the columns 53 - 57 (the indicator values for 'A' - 'E').
+
+```{r}
+trainingColTry <- trainingCol
+trainingColTry$classeA  <- ifelse(trainingColTry$classe=="A", 1, 0)
+trainingColTry$classeB  <- ifelse(trainingColTry$classe=="B", 1, 0)
+trainingColTry$classeC  <- ifelse(trainingColTry$classe=="C", 1, 0)
+trainingColTry$classeD  <- ifelse(trainingColTry$classe=="D", 1, 0)
+trainingColTry$classeE  <- ifelse(trainingColTry$classe=="E", 1, 0)
+trainingColTry <- trainingColTry[,-54]
+trainingColTry <- trainingColTry[,-1]
+M <- abs(cor(trainingColTry))
+M[,53:57]
+```
+
+In the correlation matrix, I selected those variables that had a correlation value of at least .2.
+So, the I selected the columns I wanted to include in the training of the model:
+- user_name
+- magnet_arm_x
+- magnet_arm_y
+- magnet_arm_z
+- roll_dumbbell
+- pitch_dumbbell
+- yaw_dumbbell
+- accel_dumbbell_x
+- accel_dumbbell_y
+- accel_dumbbell_z
+- roll_forearm
+- pich_forearm
+- accel_forearm_x
+- accel_forearm_y
+- magnet_forearm_x
+- magnet_forearm_y
+- classe
+
+```{r}
+trainingCol <- select(trainingCol, 1, 25:30, 35:37, 41:42, 48:49, 51:52, 54)
+```
+
+
+### Training the model (2)
+
+I first started again using the decision tree method.
+
+```{r}
+train_control<- trainControl(method="cv", number=10)
+model<- train(classe~., data=trainingCol, trControl=train_control, method="rpart")
+model
+```
+
+And again, results are disappointing. 
+
+Then, I decided to go with the random forest method.
+
+```{r}
+model <-randomForest(classe~., data=trainingCol, importance=TRUE, proximity=TRUE)
+model
+```
+
+### Results
+
+This time, it took only about a minute to calculate the model! And what made me even more happy: after preparing the test-data for prediction (that is: carry out similar column selections as I carried out on the training data), I ran the predict function to get me the results. And guess what: I got 20 correct out of 20! 
+
+```{r}
+testingCol <- select(testing, 2, 8:11, 37:49, 60:68, 84:86, 102, 113:124, 140, 151:160)
+testingCol <- select(testing, 1, 25:30, 35:37, 41:42, 48:49, 51:52, 54)
+predict(model,newdata=testingCol)
+```
+
+
+
+
+
+
